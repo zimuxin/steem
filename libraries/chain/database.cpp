@@ -1963,7 +1963,7 @@ share_type database::pay_curators( const comment_object& c, share_type max_rewar
    } FC_CAPTURE_AND_RETHROW()
 }
 
-void fill_comment_reward_context_global_state( util::comment_reward_context& ctx, const database& db )
+void fill_comment_reward_context_global_state_pre_hf17( util::comment_reward_context& ctx, const database& db )
 {
    const dynamic_global_property_object& dgpo = db.get_dynamic_global_properties();
    ctx.total_reward_shares2 = dgpo.total_reward_shares2;
@@ -1971,11 +1971,79 @@ void fill_comment_reward_context_global_state( util::comment_reward_context& ctx
    ctx.current_steem_price = db.get_feed_history().current_median_history;
 }
 
+void fill_comment_reward_context_const_global_state( util::comment_reward_context& ctx, const database& db )
+{
+   // Initialize claims
+   const auto& cidx = db.get_index< comment_index, by_cashout_time >();
+
+   for( size_t i=0; i<STEEMIT_NUM_REWARD_POOLS; i++ )
+      ctx.block_reward_for_pool[i].total_block_claims = 0;
+
+   fc::time_point_sec head_block_time = db.head_block_time();
+   for( auto citr=cidx.begin(); citr != cidx.end() && citr->cashout_time <= head_block_time; ++citr )
+   {
+      reward_pool_id_type pool_id = citr->get_reward_pool();
+      fc::uint128_t clamped_net_rshares = (citr->net_rshares > 0) ? citr->net_rshares.value : 0;
+      ctx.block_reward_for_pool[pool_id._id].total_block_claims += util::calculate_vshares( clamped_net_rshares );
+   }
+
+   ctx.current_steem_price = db.get_feed_history().current_median_history;
+}
+
+/**
+ * This method calls execute_claim() to move rewards from the reward_pool_object to
+ * the comment_reward_context object.
+ */
+
+void fill_comment_reward_context_cbr_pools( util::comment_reward_context& ctx, database& db )
+{
+   fc::time_point_sec now = db.head_block_time();
+   for( size_t i=0; i<STEEMIT_NUM_REWARD_POOLS; i++ )
+   {
+      reward_pool_id_type pool_id = reward_pool_id_type(i);
+      const reward_pool_object& pool = db.get( pool_id );
+      util::comment_block_reward& cbr = ctx.block_reward_for_pool[i];
+      db.modify( pool, [&]( reward_pool_object& p )
+      {
+         cbr.available_block_reward = p.execute_claim( cbr.total_block_claims, now );
+      } );
+   }
+}
+
+void drain_comment_reward_context_cbr_pools( util::comment_reward_context& ctx, database& db )
+{
+   // Rewards may not add up due to satoshis
+   for( size_t i=0; i<STEEMIT_NUM_REWARD_POOLS; i++ )
+   {
+      util::comment_block_reward& cbr = ctx.block_reward_for_pool[i];
+      asset back_to_pool = cbr.available_block_reward - asset( cbr.total_block_reward, cbr.available_block_reward.symbol );
+      if( back_to_pool.amount.value == 0 )
+         continue;
+
+      reward_pool_id_type pool_id = reward_pool_id_type(i);
+      const reward_pool_object& pool = db.get( pool_id );
+      db.modify( pool, [&]( reward_pool_object& p )
+      {
+         p.rewards_balance += back_to_pool;
+      } );
+   }
+}
+
+void fill_comment_reward_context_global_state( util::comment_reward_context& ctx, database& db )
+{
+   fill_comment_reward_context_const_global_state( ctx, db );
+   fill_comment_reward_context_cbr_pools( ctx, db );
+}
+
 void fill_comment_reward_context_local_state( util::comment_reward_context& ctx, const comment_object& comment )
 {
    ctx.rshares = comment.net_rshares;
    ctx.reward_weight = comment.reward_weight;
    ctx.max_sbd = comment.max_accepted_payout;
+   ctx.pool_id = comment.get_reward_pool()._id;
+   ctx.reward_from_pool = util::get_rshare_reward( ctx );
+   util::comment_block_reward& cbr = ctx.block_reward_for_pool[ ctx.pool_id ];
+   cbr.total_block_reward += ctx.reward_from_pool;
 }
 
 void database::cashout_comment_helper( util::comment_reward_context& ctx, const comment_object& comment )
@@ -1988,9 +2056,13 @@ void database::cashout_comment_helper( util::comment_reward_context& ctx, const 
       {
          fill_comment_reward_context_local_state( ctx, comment );
          if( !has_hardfork( STEEMIT_HARDFORK_0_17__771 ) )
-            fill_comment_reward_context_global_state( ctx, *this );
+            fill_comment_reward_context_global_state_pre_hf17( ctx, *this );
 
-         const share_type reward = util::get_rshare_reward( ctx );
+         share_type reward;
+         if( !has_hardfork( STEEMIT_HARDFORK_0_17__774 ) )
+            reward = util::get_rshare_reward_pre_hf17( ctx );
+         else
+            reward = ctx.reward_from_pool;
          uint128_t reward_tokens = uint128_t( reward.value );
 
          asset total_payout;
@@ -2071,6 +2143,8 @@ void database::cashout_comment_helper( util::comment_reward_context& ctx, const 
 
          if( c.parent_author == STEEMIT_ROOT_POST_PARENT )
          {
+            if( has_hardfork( STEEMIT_HARDFORK_0_17__769 ) )
+               c.cashout_time = fc::time_point_sec::maximum();
             if( has_hardfork( STEEMIT_HARDFORK_0_12__177 ) && c.last_payout == fc::time_point_sec::min() )
                c.cashout_time = head_block_time() + STEEMIT_SECOND_CASHOUT_WINDOW;
             else
@@ -2120,6 +2194,7 @@ void database::process_comment_cashout()
 
    util::comment_reward_context ctx;
    fill_comment_reward_context_global_state( ctx, *this );
+   fill_comment_reward_context_cbr_pools( ctx, *this );
 
    int count = 0;
    const auto& cidx        = get_index<comment_index>().indices().get<by_cashout_time>();
@@ -2128,15 +2203,24 @@ void database::process_comment_cashout()
    auto current = cidx.begin();
    while( current != cidx.end() && current->cashout_time <= head_block_time() )
    {
-      auto itr = com_by_root.lower_bound( current->root_comment );
-      while( itr != com_by_root.end() && itr->root_comment == current->root_comment )
+      if( has_hardfork( STEEMIT_HARDFORK_0_17__769 ) )
       {
-         const auto& comment = *itr; ++itr;
-         cashout_comment_helper( ctx, comment );
-         ++count;
+         cashout_comment_helper( ctx, *current );
+      }
+      else
+      {
+         auto itr = com_by_root.lower_bound( current->root_comment );
+         while( itr != com_by_root.end() && itr->root_comment == current->root_comment )
+         {
+            const auto& comment = *itr; ++itr;
+            cashout_comment_helper( ctx, comment );
+            ++count;
+         }
       }
       current = cidx.begin();
    }
+
+   drain_comment_reward_context_cbr_pools( ctx, *this );
 }
 
 /**
@@ -2195,6 +2279,25 @@ void database::process_funds()
           p.current_supply           += asset( new_steem, STEEM_SYMBOL );
           p.virtual_supply           += asset( new_steem, STEEM_SYMBOL );
       });
+
+      static_assert( STEEMIT_CONTENT_POST_SPLIT + STEEMIT_CONTENT_COMMENT_SPLIT == STEEMIT_100_PERCENT,
+         "content split must add up to 100%" );
+
+      auto comment_reward = (content_reward * STEEMIT_CONTENT_COMMENT_SPLIT) / STEEMIT_100_PERCENT;
+      auto post_reward = content_reward - comment_reward;
+
+      if( has_hardfork( STEEMIT_HARDFORK_0_17__774 ) )
+      {
+         modify( get( STEEMIT_POST_REWARD_POOL_ID ), [&]( reward_pool_object &pool )
+         {
+            pool.rewards_balance += asset( post_reward, STEEM_SYMBOL );
+         } );
+
+         modify( get( STEEMIT_COMMENT_REWARD_POOL_ID ), [&]( reward_pool_object& pool )
+         {
+            pool.rewards_balance += asset( comment_reward, STEEM_SYMBOL );
+         } );
+      }
 
       create_vesting( get_account( cwit.owner ), asset( witness_reward, STEEM_SYMBOL ) );
    }
@@ -2603,6 +2706,7 @@ void database::initialize_indexes()
    add_core_index< escrow_index                            >(*this);
    add_core_index< savings_withdraw_index                  >(*this);
    add_core_index< decline_voting_rights_request_index     >(*this);
+   add_core_index< reward_pool_index                       >(*this);
 
    _plugin_index_signal();
 }
@@ -2775,6 +2879,22 @@ void database::init_genesis( uint64_t init_supply )
       {
          wso.current_shuffled_witnesses[0] = STEEMIT_INIT_MINER_NAME;
       } );
+
+      // Create reward pools
+      create< reward_pool_object >( [&]( reward_pool_object& pool )
+      {
+         FC_ASSERT( pool.id == STEEMIT_POST_REWARD_POOL_ID );
+         pool.rewards_balance = asset(0, STEEM_SYMBOL);
+      } );
+
+      create< reward_pool_object >( [&]( reward_pool_object& pool )
+      {
+         FC_ASSERT( pool.id == STEEMIT_COMMENT_REWARD_POOL_ID );
+         pool.rewards_balance = asset(0, STEEM_SYMBOL);
+      } );
+
+      const auto& idx = get_index< reward_pool_index, by_id >();
+      FC_ASSERT( idx.size() == STEEMIT_NUM_REWARD_POOLS );
    }
    FC_CAPTURE_AND_RETHROW()
 }
@@ -4057,7 +4177,7 @@ void database::apply_hardfork( uint32_t hardfork )
                   {
                      modify( *itr, [&]( comment_object & c )
                      {
-                        c.cashout_time = head_block_time() + STEEMIT_CASHOUT_WINDOW_SECONDS;
+                        c.cashout_time = head_block_time() + STEEMIT_CASHOUT_WINDOW_SECONDS_PRE_HF17;
                         c.mode = first_payout;
                      });
                   }
@@ -4106,6 +4226,32 @@ void database::apply_hardfork( uint32_t hardfork )
          });
          break;
       case STEEMIT_HARDFORK_0_17:
+         {
+            /*
+             * For all current comments we will either keep their current cashout time, or extend it to 1 week
+             * after creation.
+             *
+             * We cannot do a simple iteration by cashout time because we are editting cashout time.
+             * More specifically, we will be adding an explicit cashout time to all comments with parents.
+             * This will result in a very complex and redundant iteration. The simple solution, albeit
+             * containing inefficiencies is a simple iteration over all comments.
+             *
+             * by_parent will iterate over all root posts first, which will adjust the calls to calculate_discussion_payout_time
+             * before calling on a child commment.
+             */
+            const auto& comment_idx = get_index< comment_index, by_parent >();
+            for( auto itr = comment_idx.begin(); itr != comment_idx.end(); ++itr )
+            {
+               auto cashout_time = calculate_discussion_payout_time( *itr );
+               if( cashout_time == fc::time_point_sec::maximum() )
+                  continue;
+
+               modify( *itr, [&]( comment_object& c )
+               {
+                  c.cashout_time = std::max( cashout_time, c.created + STEEMIT_CASHOUT_WINDOW_SECONDS );
+               });
+            }
+         }
          break;
       default:
          break;
