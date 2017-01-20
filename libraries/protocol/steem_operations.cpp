@@ -482,5 +482,11 @@ namespace steemit { namespace protocol {
       FC_ASSERT( current_reset_account != reset_account, "new reset account cannot be current reset account" );
    }
 
+   void delegate_vesting_shares_operation::validate()const
+   {
+      validate_account_name( delegator );
+      validate_account_name( delegatee );
+      FC_ASSERT( vesting_shares.symbol == VESTS_SYMBOL );
+   }
 
 } } // steemit::protocol
