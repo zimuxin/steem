@@ -75,7 +75,6 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     done
     echo } >> /etc/nginx/nginx.conf
     echo } >> /etc/nginx/nginx.conf
-    echo } >> /etc/nginx/nginx.conf
     PORT_NUM=8092
     for (( i=2; i<=$(nproc); i++ ))
       do
@@ -101,7 +100,6 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
 else
     cp /etc/nginx/nginx.conf.template /etc/nginx/nginx.conf
     echo server localhost:8091\; >> /etc/nginx/nginx.conf
-    echo } >> /etc/nginx.conf
     echo } >> /etc/nginx.conf
     echo } >> /etc/nginx.conf
     service nginx restart
