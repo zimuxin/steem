@@ -34,6 +34,9 @@ chown steemd:steemd $HOME/config.ini
 
 cd $HOME
 
+mv /etc/nginx/nginx.conf /etc/nginx/nginx.original.conf
+cp /etc/nginx/steemd.nginx.conf /etc/nginx/nginx.conf
+
 # get blockchain state from an S3 bucket
 # if this url is not provieded then we might as well exit
 if [[ ! -z "$BLOCKCHAIN_URL" ]]; then
@@ -67,14 +70,13 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     PORT_NUM=8092
     # don't generate endpoints in haproxy config if it already exists
     # this prevents adding to it if the docker container is stopped/started
-    cp /etc/nginx/nginx.conf.template /etc/nginx/nginx.conf
+    cp /etc/nginx/healthcheck.conf.template /etc/nginx/healthcheck.conf
     for (( i=2; i<=$(nproc); i++ ))
       do
-        echo server localhost:$PORT_NUM\; >> /etc/nginx/nginx.conf
+        echo server localhost:$PORT_NUM\; >> /etc/nginx/healthcheck.conf
         ((PORT_NUM++))
     done
-    echo } >> /etc/nginx/nginx.conf
-    echo } >> /etc/nginx/nginx.conf
+    echo } >> /etc/nginx/healthcheck.conf
     PORT_NUM=8092
     for (( i=2; i<=$(nproc); i++ ))
       do
@@ -91,6 +93,8 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     # start nginx now that the config file is complete with all endpoints
     # all of the read-only processes will connect to the write node onport 8091
     # nginx will balance all incoming traffic on port 8090
+    rm /etc/nginx/sites-enabled/default
+    cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
     service nginx restart
     # start runsv script that kills containers if they die
     mkdir -p /etc/service/steemd
@@ -98,10 +102,11 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     chmod +x /etc/service/steemd/run
     runsv /etc/service/steemd
 else
-    cp /etc/nginx/nginx.conf.template /etc/nginx/nginx.conf
-    echo server localhost:8091\; >> /etc/nginx/nginx.conf
-    echo } >> /etc/nginx.conf
-    echo } >> /etc/nginx.conf
+    cp /etc/nginx/healthcheck.conf.template /etc/nginx/healthcheck.conf
+    echo server localhost:8091\; >> /etc/nginx/healthcheck.conf
+    echo } >> /etc/healthcheck.conf
+    rm /etc/nginx/sites-enabled/default
+    cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
     service nginx restart
     exec chpst -usteemd \
         $STEEMD \

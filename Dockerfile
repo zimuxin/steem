@@ -183,8 +183,9 @@ ADD contrib/fullnode.config.ini /etc/steemd/fullnode.config.ini
 ADD contrib/steemd.run /usr/local/bin/steem-sv-run.sh
 RUN chmod +x /usr/local/bin/steem-sv-run.sh
 
-# add nginx template
-ADD contrib/config-for-nginx /etc/nginx/nginx.conf.template
+# add nginx templates
+ADD contrib/steemd.nginx.conf /etc/nginx/steemd.nginx.conf
+ADD contrib/healthcheck.conf.template /etc/nginx/healthcheck.conf.template
 
 # add PaaS startup script and service script
 ADD contrib/startpaassteemd.sh /usr/local/bin/startpaassteemd.sh
