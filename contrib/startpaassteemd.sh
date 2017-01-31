@@ -95,6 +95,7 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     # nginx will balance all incoming traffic on port 8090
     rm /etc/nginx/sites-enabled/default
     cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
+    /etc/init.d/fcgiwrap restart
     service nginx restart
     # start runsv script that kills containers if they die
     mkdir -p /etc/service/steemd
@@ -107,6 +108,7 @@ else
     echo } >> /etc/nginx/healthcheck.conf
     rm /etc/nginx/sites-enabled/default
     cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
+    /etc/init.d/fcgiwrap restart
     service nginx restart
     exec chpst -usteemd \
         $STEEMD \
