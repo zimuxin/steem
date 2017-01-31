@@ -104,13 +104,13 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
 else
     cp /etc/nginx/healthcheck.conf.template /etc/nginx/healthcheck.conf
     echo server localhost:8091\; >> /etc/nginx/healthcheck.conf
-    echo } >> /etc/healthcheck.conf
+    echo } >> /etc/nginx/healthcheck.conf
     rm /etc/nginx/sites-enabled/default
     cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
     service nginx restart
     exec chpst -usteemd \
         $STEEMD \
-            --rpc-endpoint=0.0.0.0:8090 \
+            --rpc-endpoint=0.0.0.0:8091 \
             --p2p-endpoint=0.0.0.0:2001 \
             --data-dir=$HOME \
             $ARGS \
