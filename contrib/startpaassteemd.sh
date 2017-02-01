@@ -37,6 +37,10 @@ cd $HOME
 mv /etc/nginx/nginx.conf /etc/nginx/nginx.original.conf
 cp /etc/nginx/steemd.nginx.conf /etc/nginx/nginx.conf
 
+if [[ ! "$SYNC_TO_S3" ]]; then
+  cd /mnt/ramdisk
+fi
+
 # get blockchain state from an S3 bucket
 # if this url is not provieded then we might as well exit
 if [[ ! -z "$BLOCKCHAIN_URL" ]]; then
@@ -49,6 +53,13 @@ if [[ ! -z "$BLOCKCHAIN_URL" ]]; then
 else
   echo error: no URL specified to get blockchain state from - exiting
   exit 1
+fi
+
+if [[ ! "$SYNC_TO_S3" ]]; then
+  mv /mnt/ramdisk/blockchain/block_log $HOME/block_log
+  ln -s /mnt/ramdisk/blockchain/block_log $HOME/block_log
+  ARGS += " --shared-file-dir=/mnt/ramdisk/blockchain"
+  cd $HOME
 fi
 
 # change owner of downloaded blockchainstate to steemd user
