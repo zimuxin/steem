@@ -73,15 +73,34 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
             $ARGS \
             $STEEMD_EXTRA_OPTS \
             2>&1 &
-    # sleep for a moment to allow the writer node to be ready to accept connections from the readers
-    sleep 30
+    # wait for writer node to become synced before launching the readers
+    echo steemd: waiting for write node to become synced to launch readers
+    SYNCED=0
+    while [[ $SYNCED -ne 1 ]]; do
+      BLOCKCHAIN_TIME=$(
+        curl --silent --max-time 20 \
+             --data '{"id":39,"method":"get_dynamic_global_properties","params":[]}' \
+             localhost:8091 | jq -r .result.time
+      )
+      if [[ ! -z "$BLOCKCHAIN_TIME" ]]; then
+        BLOCKCHAIN_SECS=`date -d $BLOCKCHAIN_TIME +%s`
+        CURRENT_SECS=`date +%s`
+        BLOCK_AGE=$((${CURRENT_SECS} - ${BLOCKCHAIN_SECS}))
+        echo steemd: syncing on startup blockchain is $BLOCK_AGE seconds old
+        if [[ ${BLOCK_AGE} -le 10 ]]; then
+          SYNCED=1
+        fi
+      fi
+      sleep 10
+    done
     PORT_NUM=8092
     cp /etc/nginx/healthcheck.conf.template /etc/nginx/healthcheck.conf
     CORES=$(nproc)
     PROCESSES=$((CORES * 4))
+    echo steemd: starting $PROCESSES reader nodes
     for (( i=2; i<=$PROCESSES; i++ ))
       do
-        echo server localhost:$PORT_NUM\; >> /etc/nginx/healthcheck.conf
+        echo server 127.0.0.1:$PORT_NUM\; >> /etc/nginx/healthcheck.conf
         ((PORT_NUM++))
     done
     echo } >> /etc/nginx/healthcheck.conf
@@ -113,7 +132,7 @@ if [[ "$USE_MULTICORE_READONLY" ]]; then
     runsv /etc/service/steemd
 else
     cp /etc/nginx/healthcheck.conf.template /etc/nginx/healthcheck.conf
-    echo server localhost:8091\; >> /etc/nginx/healthcheck.conf
+    echo server 127.0.0.1:8091\; >> /etc/nginx/healthcheck.conf
     echo } >> /etc/nginx/healthcheck.conf
     rm /etc/nginx/sites-enabled/default
     cp /etc/nginx/healthcheck.conf /etc/nginx/sites-enabled/default
